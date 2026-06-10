@@ -10,22 +10,22 @@ const client = new Client({
 });
 
 // ===================== STATE =====================
-const games = {}; // channelId -> gameState
+const games = {};
 
 function createGame(channelId) {
   return {
     channelId,
-    phase: 'joining',        // joining | playing | ended
-    players: {},             // userId -> { name, spot, alive, hasBomb }
-    order: [],               // userIds sorted by spot
+    phase: 'joining',
+    players: {},
+    order: [],
     currentTurn: 0,
-    bombHolder: null,        // userId
-    ghosts: [],              // userIds of dead players
+    bombHolder: null,
+    ghosts: [],
     boardMessageId: null,
     turnMessageId: null,
     joinTimeout: null,
     turnTimeout: null,
-    swapRequests: {},        // requesterId -> { targetId, resolve }
+    swapRequests: {},
   };
 }
 
@@ -52,7 +52,6 @@ function buildBoard(game) {
 }
 
 function buildSwapBoard(game, excludeUserId) {
-  // Show alive players except the requester
   const alivePlayers = Object.entries(game.players)
     .filter(([id, p]) => p.alive && id !== excludeUserId)
     .sort(([, a], [, b]) => a.spot - b.spot);
@@ -171,17 +170,13 @@ async function beginGame(channel, game) {
     return;
   }
 
-  // Sort order by spot number
   game.order = alivePlayers
     .sort(([, a], [, b]) => a.spot - b.spot)
     .map(([id]) => id);
 
   game.phase = 'playing';
-
-  // Disable join buttons
   await updateBoard(game, channel);
 
-  // Show turn order
   const orderText = game.order.map(id => `**${game.players[id].name}** — مكان ${game.players[id].spot}`).join('\n');
   await channel.send({
     embeds: [
@@ -201,11 +196,11 @@ async function plantBombRandom(channel, game) {
   const idx = Math.floor(Math.random() * alive.length);
   const bombUserId = alive[idx];
 
-  // Clear previous bomb
   for (const id of Object.keys(game.players)) game.players[id].hasBomb = false;
   game.players[bombUserId].hasBomb = true;
   game.bombHolder = bombUserId;
 
+  // إشعار حامل القنبلة عبر DM
   const bombUser = await client.users.fetch(bombUserId);
   await sendDM(bombUser, '💣 **لديك القنبلة هذه الجولة.**\nحاول التخلص منها قبل الانفجار!');
 
@@ -220,7 +215,6 @@ async function startRound(channel, game) {
     await endGame(channel, game);
     return;
   }
-
   await doTurn(channel, game);
 }
 
@@ -228,7 +222,6 @@ async function doTurn(channel, game) {
   const alive = getAliveOrder(game);
 
   if (game.currentTurn >= alive.length) {
-    // All turns done — bomb explodes
     await explode(channel, game);
     return;
   }
@@ -237,44 +230,36 @@ async function doTurn(channel, game) {
   const player = game.players[currentId];
   const user = await client.users.fetch(currentId);
 
+  // إعلان الدور في القناة العامة
+  const embed = new EmbedBuilder()
+    .setTitle(`🎯 دور ${player.name}`)
+    .setColor(0x3399ff)
+    .setDescription(`📍 مكانه الحالي: **${player.spot}**\n\n⏳ لديه **30 ثانية** للاختيار`);
+
+  const turnMsg = await channel.send({ embeds: [embed] });
+  game.turnMessageId = turnMsg.id;
+
+  // إرسال الأزرار عبر DM للاعب
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`stay_${channel.id}`).setLabel('✅ البقاء').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`change_${channel.id}`).setLabel('🔄 تغيير').setStyle(ButtonStyle.Danger)
   );
 
-  const embed = new EmbedBuilder()
-    .setTitle(`🎯 دور ${player.name}`)
-    .setColor(0x3399ff)
-    .setDescription(`📍 مكانك الحالي: **${player.spot}**\n\nماذا تريد أن تفعل؟\nلديك **30 ثانية**`)
+  const dmMsg = await sendDM(user, `🎯 **دورك الآن!**\n📍 مكانك الحالي: **${player.spot}**\n\nماذا تريد أن تفعل؟`, [row]);
 
-  const turnMsg = await channel.send({ embeds: [embed], components: [row] });
-  game.turnMessageId = turnMsg.id;
+  if (!dmMsg) {
+    await channel.send(`⚠️ لم يتمكن البوت من إرسال DM لـ **${player.name}**. سيتم تجاوز دوره.`);
+    game.currentTurn++;
+    await doTurn(channel, game);
+    return;
+  }
 
-  // DM the player
-  await sendDM(user, `🎯 **دورك الآن!**\nاذهب إلى القناة واختر البقاء أو التغيير.`);
-
-  // Auto-advance after 30 seconds
   if (game.turnTimeout) clearTimeout(game.turnTimeout);
   game.turnTimeout = setTimeout(async () => {
-    await disableTurnMessage(channel, game);
+    await channel.send(`⏰ انتهى وقت **${player.name}**، تم تجاوز دوره.`);
     game.currentTurn++;
     await doTurn(channel, game);
   }, 30000);
-}
-
-async function disableTurnMessage(channel, game) {
-  try {
-    if (!game.turnMessageId) return;
-    const msg = await channel.messages.fetch(game.turnMessageId).catch(() => null);
-    if (msg) {
-      const disabledRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('stay_done').setLabel('✅ البقاء').setStyle(ButtonStyle.Success).setDisabled(true),
-        new ButtonBuilder().setCustomId('change_done').setLabel('🔄 تغيير').setStyle(ButtonStyle.Danger).setDisabled(true)
-      );
-      await msg.edit({ components: [disabledRow] });
-    }
-  } catch {}
-  game.turnMessageId = null;
 }
 
 // ===================== EXPLODE =====================
@@ -308,7 +293,6 @@ async function explode(channel, game) {
     return;
   }
 
-  // Ghost picks next bomb target
   if (victimUser) {
     await askGhostToPick(channel, game, victimUser);
   } else {
@@ -331,11 +315,9 @@ async function askGhostToPick(channel, game, ghostUser) {
     return;
   }
 
-  // Store ghost's DM message for collector
   game.ghostPickMsgId = msg.id;
   game.ghostPickDMChannelId = msg.channelId;
 
-  // Timeout: if ghost doesn't pick in 30s, pick randomly
   game.ghostTimeout = setTimeout(async () => {
     await channel.send('👻 الشبح لم يختر، سيتم اختيار القنبلة عشوائيًا...');
     await plantBombRandom(channel, game);
@@ -382,15 +364,13 @@ async function handleSwapRequest(channel, game, requesterId, targetId) {
   );
 
   if (!dm) {
-    await channel.send(`⚠️ لم يتمكن البوت من إرسال DM لـ **${target.name}**. يُعتبر رفضًا.`);
+    await channel.send(`⚠️ لم يتمكن البوت من إرسال DM لـ **${target.name}**. يُعتبر رفضًا.\n🎲 تبدأ جولة النرد!`);
     await startDiceChallenge(channel, game, requesterId, targetId);
     return;
   }
 
-  // Store pending swap
   game.swapRequests[requesterId] = { targetId };
 
-  // Timeout: auto-reject after 20s
   setTimeout(async () => {
     if (game.swapRequests[requesterId]) {
       delete game.swapRequests[requesterId];
@@ -406,7 +386,6 @@ async function doSwap(channel, game, idA, idB) {
   game.players[idA].spot = spotB;
   game.players[idB].spot = spotA;
 
-  // Transfer bomb if needed
   if (game.players[idA].hasBomb) {
     game.players[idA].hasBomb = false;
     game.players[idB].hasBomb = true;
@@ -428,20 +407,19 @@ async function doSwap(channel, game, idA, idB) {
 async function startDiceChallenge(channel, game, requesterId, targetId) {
   const requesterUser = await client.users.fetch(requesterId);
   const targetUser = await client.users.fetch(targetId);
+  const rName = game.players[requesterId].name;
+  const tName = game.players[targetId].name;
 
-  await channel.send('🎲 **جولة النرد تبدأ الآن!** كل لاعب سيرمي النرد في الـ DM.');
+  await channel.send(`🎲 **جولة النرد بين ${rName} و ${tName}!**\nكل لاعب سيرمي النرد في الـ DM.`);
 
-  let requesterRoll = null;
-  let targetRoll = null;
-
-  const rollRow = new ActionRowBuilder().addComponents(
+  const rollRow1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`roll_${requesterId}`).setLabel('🎲 ارمِ النرد').setStyle(ButtonStyle.Primary)
   );
   const rollRow2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`roll_${targetId}`).setLabel('🎲 ارمِ النرد').setStyle(ButtonStyle.Primary)
   );
 
-  await sendDM(requesterUser, '🎲 **اضغط لرمي النرد!**', [rollRow]);
+  await sendDM(requesterUser, '🎲 **اضغط لرمي النرد!**', [rollRow1]);
   await sendDM(targetUser, '🎲 **اضغط لرمي النرد!**', [rollRow2]);
 
   game.diceChallenge = {
@@ -452,12 +430,8 @@ async function startDiceChallenge(channel, game, requesterId, targetId) {
       if (this.rolls[requesterId] !== undefined && this.rolls[targetId] !== undefined) {
         const rRoll = this.rolls[requesterId];
         const tRoll = this.rolls[targetId];
-        const rName = game.players[requesterId].name;
-        const tName = game.players[targetId].name;
 
-        await channel.send(
-          `🎲 **${rName}** = ${rRoll}\n🎲 **${tName}** = ${tRoll}`
-        );
+        await channel.send(`🎲 **${rName}** = ${rRoll}\n🎲 **${tName}** = ${tRoll}`);
 
         if (rRoll > tRoll) {
           await channel.send(`🏆 **${rName}** فاز بالنرد وتم التبديل!`);
@@ -470,7 +444,6 @@ async function startDiceChallenge(channel, game, requesterId, targetId) {
 
         delete game.diceChallenge;
 
-        // Advance turn
         if (game.turnTimeout) clearTimeout(game.turnTimeout);
         game.currentTurn++;
         await doTurn(channel, game);
@@ -478,7 +451,6 @@ async function startDiceChallenge(channel, game, requesterId, targetId) {
     }
   };
 
-  // Timeout for dice
   setTimeout(async () => {
     if (!game.diceChallenge) return;
     if (game.diceChallenge.rolls[requesterId] === undefined) game.diceChallenge.rolls[requesterId] = Math.floor(Math.random() * 6) + 1;
@@ -502,7 +474,6 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '⚠️ اللعبة لم تبدأ بعد أو انتهت.', ephemeral: true });
     }
 
-    // Remove player from old spot
     if (game.players[user.id]) {
       game.players[user.id].spot = spotNum;
     } else {
@@ -513,7 +484,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // ── STAY ──
+  // ── STAY (من DM) ──
   if (customId.startsWith('stay_')) {
     const cId = customId.split('_')[1];
     const game = games[cId];
@@ -524,14 +495,18 @@ client.on('interactionCreate', async (interaction) => {
     if (user.id !== currentId) return interaction.reply({ content: '⚠️ ليس دورك!', ephemeral: true });
 
     if (game.turnTimeout) clearTimeout(game.turnTimeout);
-    await disableTurnMessage(interaction.channel, game);
-    await interaction.reply({ content: `✅ **${game.players[user.id].name}** اختار البقاء.` });
+
+    await interaction.update({ content: `✅ اخترت البقاء في مكانك.`, components: [] });
+
+    const channel = await client.channels.fetch(cId);
+    await channel.send(`✅ **${game.players[user.id].name}** اختار البقاء في مكانه.`);
+
     game.currentTurn++;
-    await doTurn(interaction.channel, game);
+    await doTurn(channel, game);
     return;
   }
 
-  // ── CHANGE ──
+  // ── CHANGE (من DM) ──
   if (customId.startsWith('change_')) {
     const cId = customId.split('_')[1];
     const game = games[cId];
@@ -548,29 +523,32 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '⚠️ لا يوجد لاعبون آخرون للتبديل معهم.', ephemeral: true });
     }
 
-    await disableTurnMessage(interaction.channel, game);
-    await interaction.reply({
-      content: `🔄 **${game.players[user.id].name}** يريد التبديل! اختر لاعبًا:`,
+    await interaction.update({
+      content: `🔄 اختر اللاعب الذي تريد التبديل معه:`,
       components: rows
     });
+
+    const channel = await client.channels.fetch(cId);
+    await channel.send(`🔄 **${game.players[user.id].name}** يريد التبديل مع أحد اللاعبين!`);
     return;
   }
 
-  // ── SWAP TARGET ──
+  // ── SWAP TARGET (من DM) ──
   if (customId.startsWith('swaptarget_')) {
     const targetId = customId.split('_')[1];
-    // Find game
     const game = Object.values(games).find(g =>
       g.phase === 'playing' && getAliveOrder(g)[g.currentTurn] === user.id
     );
     if (!game) return interaction.reply({ content: '⚠️ لا يمكن إتمام الطلب.', ephemeral: true });
 
     await interaction.update({ content: `🔄 تم إرسال طلب التبديل لـ **${game.players[targetId]?.name}**`, components: [] });
-    await handleSwapRequest(interaction.channel, game, user.id, targetId);
+
+    const channel = await client.channels.fetch(game.channelId);
+    await handleSwapRequest(channel, game, user.id, targetId);
     return;
   }
 
-  // ── SWAP ACCEPT ──
+  // ── SWAP ACCEPT (من DM) ──
   if (customId.startsWith('swapaccept_')) {
     const parts = customId.split('_');
     const cId = parts[1];
@@ -594,7 +572,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // ── SWAP REJECT ──
+  // ── SWAP REJECT (من DM) ──
   if (customId.startsWith('swapreject_')) {
     const parts = customId.split('_');
     const cId = parts[1];
@@ -614,12 +592,11 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // ── DICE ROLL ──
+  // ── DICE ROLL (من DM) ──
   if (customId.startsWith('roll_')) {
     const rollerId = customId.split('_')[1];
     if (user.id !== rollerId) return interaction.reply({ content: '⚠️ هذا النرد ليس لك!', ephemeral: true });
 
-    // Find game with dice challenge
     const game = Object.values(games).find(g =>
       g.diceChallenge &&
       (g.diceChallenge.requesterId === user.id || g.diceChallenge.targetId === user.id)
@@ -635,14 +612,11 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // ── GHOST PICK ──
+  // ── GHOST PICK (من DM) ──
   if (customId.startsWith('ghostpick_')) {
     const pickedId = customId.split('_')[1];
 
-    // Find game where user is a ghost
-    const game = Object.values(games).find(g =>
-      g.ghosts.includes(user.id)
-    );
+    const game = Object.values(games).find(g => g.ghosts.includes(user.id));
     if (!game) return interaction.reply({ content: '⚠️', ephemeral: true });
 
     if (game.ghostTimeout) clearTimeout(game.ghostTimeout);
@@ -652,7 +626,6 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '⚠️ اللاعب الذي اخترته لم يعد حيًا!', ephemeral: true });
     }
 
-    // Set bomb
     for (const id of Object.keys(game.players)) game.players[id].hasBomb = false;
     game.players[pickedId].hasBomb = true;
     game.bombHolder = pickedId;
@@ -660,7 +633,7 @@ client.on('interactionCreate', async (interaction) => {
     const bombUser = await client.users.fetch(pickedId);
     await sendDM(bombUser, '💣 **لديك القنبلة هذه الجولة.**\nحاول التخلص منها قبل الانفجار!');
 
-    await interaction.update({ content: `✅ اخترت مكان ${game.players[pickedId].name} لزرع القنبلة.`, components: [] });
+    await interaction.update({ content: `✅ اخترت زرع القنبلة عند **${game.players[pickedId].name}**`, components: [] });
 
     const channel = await client.channels.fetch(game.channelId);
     await channel.send({
@@ -698,4 +671,4 @@ client.once('ready', () => {
 });
 
 // ===================== TOKEN =====================
-client.login(process.env.TOKEN);
+client.login(process.env.MTUxNDAzNzM3MDQzMjAwMDE0MQ.GFJ6fO.iRe80upbASguHKoujnPFRm6fMajbS3ZrMU_bfI);
