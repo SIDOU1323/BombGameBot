@@ -698,4 +698,4 @@ client.once('ready', () => {
 });
 
 // ===================== TOKEN =====================
-client.login(process.env.MTUxNDAzNzM3MDQzMjAwMDE0MQ.G_9x2Q.naKzopPgy9Yf3KnjiJnEElZLWFVFpec-6WjTE4);
+client.login(process.env.TOKEN);
